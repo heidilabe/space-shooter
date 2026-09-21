@@ -33,11 +33,11 @@ PLAYER_SCALE = (60, 60)
 BULLET_SPEED = 14
 BULLET_SCALE = (6, 16)
 
-ENEMY_BASE_VEL = 1.2            # velocidad inicial de caida (lenta)
-ENEMY_MAX_VEL = 4.0
-ENEMY_WAVE_DELAY = 2.6          # segundos entre oleadas (mas respiro)
-ENEMY_ROWS = 5                  # filas MAXIMAS por oleada (progresivo)
-ENEMY_PER_ROW = 7
+ENEMY_BASE_VEL = 1.0            # velocidad inicial de caida (esquivable)
+ENEMY_MAX_VEL = 2.0             # tope: siguen siendo esquivables al final
+ENEMY_WAVE_DELAY = 3.5          # segundos entre oleadas (mas respiro)
+ENEMY_ROWS = 2                  # filas MAXIMAS por oleada (muy pocas)
+ENEMY_PER_ROW = 3               # meteoritos MAX por fila (dispersos)
 ENEMY_SCALE = (50, 50)
 ENEMY_POINTS = 10
 
@@ -137,19 +137,45 @@ class Player:
         if self.invulnerable > 0 and int(self.invulnerable * 8) % 2 == 0:
             return
 
-        cx, cy = self.x + self.width / 2, self.y + self.height / 2
+        cx = self.x + self.width / 2
         glow = NEON_PURPLE
-        # Cuerpo (triangulo apuntando arriba) + aletas
-        points = [
-            (cx, self.y + 2),            # punta
-            (self.x + 4, self.y + self.height - 4),
-            (self.x + self.width / 2, self.y + self.height - 10),
-            (self.x + self.width - 4, self.y + self.height - 4),
+
+        # Propulsor / llama trasera animada: parpadea cambiando su longitud
+        flame_len = self.height * 0.16 + (int(self.game.elapsed * 8) % 2) * 5
+        flame_base = self.y + self.height - 8
+        flame = [
+            (cx - 5, flame_base),
+            (cx, flame_base + flame_len),
+            (cx + 5, flame_base),
         ]
-        draw_polygon_outline(surface, WHITE, glow, points, 2)
-        # Cabina
-        cockpit = [(cx, self.y + 14), (cx - 4, self.y + 22), (cx + 4, self.y + 22)]
-        draw_polygon_outline(surface, (220, 220, 255), (120, 40, 200), cockpit, 1)
+        pygame.draw.polygon(surface, ORANGE, flame)
+        draw_polygon_outline(surface, YELLOW, ORANGE, flame, 1)
+
+        # Alas laterales (triangulos a los costados)
+        for side in (-1, 1):
+            wing = [
+                (cx + side * 8, self.y + 26),
+                (cx + side * (self.width / 2 - 2), self.y + self.height - 6),
+                (cx + side * 6, self.y + self.height - 6),
+            ]
+            draw_polygon_outline(surface, WHITE, glow, wing, 2)
+
+        # Cuerpo principal tipo cohete (alargado, con base ancha)
+        body = [
+            (cx, self.y + 2),
+            (cx + 9, self.y + 22),
+            (cx + 9, self.y + self.height - 12),
+            (cx - 9, self.y + self.height - 12),
+            (cx - 9, self.y + 22),
+        ]
+        pygame.draw.polygon(surface, DARK_PURPLE, body)
+        draw_polygon_outline(surface, WHITE, glow, body, 2)
+
+        # Cabina / luz central celeste brillante
+        cockpit = pygame.Rect(cx - 6, self.y + 16, 12, 18)
+        pygame.draw.ellipse(surface, (140, 220, 255), cockpit)
+        pygame.draw.ellipse(surface, (230, 250, 255), cockpit.inflate(-6, -8))
+        pygame.draw.circle(surface, (220, 245, 255), (int(cx - 2), int(self.y + 22)), 3)
 
 
 class Bullet:
@@ -178,39 +204,101 @@ class Bullet:
 
 
 class Enemy:
-    """Enemigo triangular invertido que desciende desde arriba."""
+    """Meteorito: roca irregular gris con cráteres y sombreado 3D que gira."""
 
     def __init__(self, x, y, vel):
         self.width, self.height = ENEMY_SCALE
         self.x = x
         self.y = y
-        self.vel = vel          # velocidad de caida en px/frame
-        self.wobble = random.uniform(0, math.tau)
-        self.hp = 1             # disparos necesarios para morir
+        self.vel = vel
+        self.hp = 1
         self.points = ENEMY_POINTS
         self.alive = True
 
+        # 1. FORMA ROCOSA (Más angular y variada)
+        n = random.randint(10, 14)  # Más vértices para mayor detalle
+        self.shape = []
+        for i in range(n):
+            angle = i * math.tau / n
+            # Variación de radio más agresiva para que no sea redondo
+            dist = random.uniform(0.6, 1.1)
+            self.shape.append((math.cos(angle) * dist, math.sin(angle) * dist))
+
+        # 2. COLORES (Gris piedra)
+        gray_val = random.randint(100, 130)
+        self.color_base = (gray_val, gray_val, gray_val + 5)
+        self.color_dark = (gray_val - 40, gray_val - 40, gray_val - 35)
+        self.color_light = (min(255, gray_val + 40), min(255, gray_val + 40), min(255, gray_val + 50))
+
+        # 3. CRÁTERES (Generados una sola vez)
+        self.craters = []
+        for _ in range(random.randint(4, 7)):
+            # Posición aleatoria dentro de la roca (polares)
+            c_ang = random.uniform(0, math.tau)
+            c_dist = random.uniform(0.1, 0.6)
+            c_rad = random.uniform(2, 6)
+            # Guardamos datos para dibujo
+            self.craters.append({
+                "rel_pos": (math.cos(c_ang) * c_dist, math.sin(c_ang) * c_dist),
+                "radius": c_rad,
+                "shadow_color": (gray_val - 60, gray_val - 60, gray_val - 55),
+                "light_color": (min(255, gray_val + 20), min(255, gray_val + 20), min(255, gray_val + 30))
+            })
+
+        self.angle = random.uniform(0, math.tau)
+        self.spin = random.choice([-1, 1]) * random.uniform(0.4, 1.2)
+
     def update(self, dt):
-        # Pequeño balanceo horizontal para dar vida al movimiento
-        self.wobble += dt * 3
-        sway = math.sin(self.wobble) * 1.2
-        self.x += sway
+        self.angle += self.spin * dt
         self.y += self.vel
         if self.y > HEIGHT:
             self.alive = False
 
+    def _rotate(self, px, py):
+        ca, sa = math.cos(self.angle), math.sin(self.angle)
+        return (px * ca - py * sa, px * sa + py * ca)
+
     def draw(self, surface):
-        cx, cy = self.x + self.width / 2, self.y + self.height / 2
-        glow = RED if self.vel < 4.5 else ORANGE
-        points = [
-            (self.x + 4, self.y + 4),               # esquina sup izq
-            (cx, self.y + self.height - 2),         # punta abajo
-            (self.x + self.width - 4, self.y + 4),  # esquina sup der
-            (cx, self.y + 12),                      # muesca central
-        ]
-        draw_polygon_outline(surface, glow, (60, 5, 5), points, 2)
-        # Ojo central
-        pygame.draw.circle(surface, glow, (int(cx), int(self.y + self.height / 2)), 4)
+        cx = self.x + self.width / 2
+        cy = self.y + self.height / 2
+        max_r = min(self.width, self.height) / 2 * 0.95
+
+        # --- DIBUJO DE LA SILUETA ---
+        pts = []
+        for (sx, sy) in self.shape:
+            rx, ry = self._rotate(sx, sy)
+            pts.append((cx + rx * max_r, cy + ry * max_r))
+
+        # Sombra proyectada (desplazada un poco a la derecha/abajo)
+        shadow_pts = [(p[0] + 3, p[1] + 3) for p in pts]
+        pygame.draw.polygon(surface, (15, 15, 25), shadow_pts)
+
+        # Cuerpo base
+        pygame.draw.polygon(surface, self.color_base, pts)
+
+        # Borde de luz (Superior-Izquierda) y Sombra (Inferior-Derecha)
+        # Dibujamos un contorno sutil
+        pygame.draw.polygon(surface, self.color_dark, pts, 2)
+
+        # --- DIBUJO DE CRÁTERES ---
+        for c in self.craters:
+            # Rotar la posición del cráter
+            rx, ry = self._rotate(c["rel_pos"][0], c["rel_pos"][1])
+            pos = (int(cx + rx * max_r), int(cy + ry * max_r))
+
+            # Profundidad del cráter (Sombra)
+            pygame.draw.circle(surface, c["shadow_color"], pos, int(c["radius"]))
+            # Brillo en el borde inferior del cráter (Luz lateral)
+            light_pos = (pos[0] + 1, pos[1] + 1)
+            pygame.draw.circle(surface, c["light_color"], light_pos, int(c["radius"]), 1)
+
+        # --- DETALLES DE TEXTURA (Puntos de luz aleatorios fijos) ---
+        # Usamos la rotación para que las "motas" sigan a la roca
+        for i in range(5):
+            # Usar i como semilla simple
+            tx, ty = self._rotate(math.cos(i) * 0.4, math.sin(i * 2) * 0.4)
+            t_pos = (int(cx + tx * max_r), int(cy + ty * max_r))
+            pygame.draw.circle(surface, self.color_light, t_pos, 1)
 
     @property
     def rect(self):
@@ -218,10 +306,11 @@ class Enemy:
 
 
 class Martian:
-    """Marciano con platillo: mas resistente y valioso que el enemigo normal.
+    """Marciano: mas resistente y valioso que el enemigo normal.
 
-    Se dibuja como una elipse verde (platillo/cupula) con dos ojos.
-    Requiere MARTIAN_HP impactos para ser destruido.
+    Se dibuja con cabeza en forma de gota invertida, cuerpo pequeño,
+    brazos delgados con manos y piernas cortas con pies, todo en tonos
+    verdes con sombreado. Requiere MARTIAN_HP impactos para ser destruido.
     """
 
     def __init__(self, x, y, vel):
@@ -245,37 +334,142 @@ class Martian:
             self.alive = False
 
     def draw(self, surface):
-        cx, cy = self.x + self.width / 2, self.y + self.height / 2
+        cx = int(self.x + self.width / 2)
+        top = int(self.y + 1)
         # Cambia el brillo segun la resistencia restante (pista visual)
         glow = (120, 255, 140) if self.hp > 1 else (255, 190, 70)
 
-        # Cuerpo / plato (elipse ancha)
-        body = pygame.Rect(
-            int(self.x + 2), int(self.y + 20),
-            self.width - 4, self.height - 32,
-        )
-        body = body.inflate(14, 8)
-        pygame.draw.ellipse(surface, (25, 110, 55), body)
-        pygame.draw.ellipse(surface, glow, body, 2)
+        # Paleta verde con sombreado (oscuro abajo, luz arriba-izquierda)
+        green = (70, 175, 95)
+        green_dark = (35, 110, 55)
+        green_light = (135, 235, 155)
+        black_eye = (14, 18, 22)
 
-        # Cupula (elipse verde superior)
-        dome = pygame.Rect(
-            int(self.x + 10), int(self.y + 6),
-            self.width - 20, self.height - 36,
+        # --- CABEZA OVALADA GRANDE (aprox. 50% de la altura total del personaje)
+        hx, hy, R = cx, top + 20, 14
+        pts = []
+        for i in range(7):  # arco superior redondeado
+            a = math.pi * i / 6
+            pts.append((hx + R * math.cos(a), hy - R * math.sin(a)))
+        pts += [
+            (hx + 7, hy + 9),
+            (hx, hy + 14),   # barbilla redondeada
+            (hx - 7, hy + 9),
+        ]
+        # Sombra proyectada y relleno
+        pygame.draw.polygon(surface, green_dark, [(p[0] + 2, p[1] + 2) for p in pts])
+        pygame.draw.polygon(surface, green, pts)
+        pygame.draw.polygon(surface, glow, pts, 1)
+        # Brillo lateral (sombreado del volumen)
+        pygame.draw.ellipse(
+            surface, green_light,
+            pygame.Rect(int(hx - R + 2), int(hy - R + 2), 9, 6),
         )
-        dome = dome.inflate(6, 6)
-        pygame.draw.ellipse(surface, (45, 160, 80), dome)
-        pygame.draw.ellipse(surface, glow, dome, 2)
 
-        # Ojos
+        # --- OJOS NEGROS GRANDES Y OVALADOS, con reflejo blanco cada uno
         for side in (-1, 1):
-            ex, ey = int(cx + side * 8), int(self.y + 21)
-            pygame.draw.circle(surface, WHITE, (ex, ey), 6)
-            pygame.draw.circle(surface, (15, 15, 15), (ex + side, ey + 1), 3)
+            ex = int(hx + side * 8.5 - (4.5 if side < 0 else 0))
+            eye = pygame.Rect(ex, int(hy - 6), 9, 13)
+            pygame.draw.ellipse(surface, black_eye, eye)
+            pygame.draw.circle(surface, WHITE,
+                               (ex + 3, int(hy - 3)), 2)
+
+        # --- BOCA pequeña y discreta (sin nariz)
+        pygame.draw.line(surface, green_dark,
+                         (int(hx - 3), int(hy + 10)),
+                         (int(hx + 3), int(hy + 10)), 2)
+
+        # --- CUERPO pequeño y delgado debajo de la barbilla
+        by = hy + 16
+        body = pygame.Rect(int(cx - 6), int(by), 12, 8)
+        pygame.draw.ellipse(surface, green_dark, body.move(1, 1))
+        pygame.draw.ellipse(surface, green, body)
+        pygame.draw.ellipse(surface, glow, body, 1)
+
+        # --- BRAZOS delgados con manos (a los costados)
+        for side in (-1, 1):
+            shoulder = (cx + side * 7, by + 1)
+            hand = (cx + side * 14, by - 1)
+            pygame.draw.line(surface, green_dark,
+                             (shoulder[0] + side, shoulder[1] + 1),
+                             (hand[0] + side, hand[1] + 1), 2)
+            pygame.draw.line(surface, green, shoulder, hand, 2)
+            pygame.draw.circle(surface, green_light, hand, 2)
+            pygame.draw.circle(surface, glow, hand, 2, 1)
+
+        # --- PIERNAS delgadas con pies pequeños
+        for side in (-1, 1):
+            hip = (cx + side * 4, by + 6)
+            pygame.draw.line(surface, green_dark,
+                             (hip[0] + side, hip[1] + 1),
+                             (hip[0] + side, hip[1] + 6), 2)
+            pygame.draw.line(surface, green, hip, (hip[0], hip[1] + 6), 2)
+            foot = pygame.Rect(int(hip[0] - (3 if side < 0 else 0)),
+                               int(hip[1] + 4), 7, 4)
+            pygame.draw.ellipse(surface, green_dark, foot.move(1, 1))
+            pygame.draw.ellipse(surface, green, foot)
 
     @property
     def rect(self):
         return pygame.Rect(self.x, self.y, self.width, self.height)
+
+
+class Explosion:
+    """Estallido de particulas que se expanden y desvanecen.
+
+    Se crea en el punto del enemigo destruido; cada particula vuela en
+    una direccion aleatoria perdiendo velocidad, y el efecto completo
+    dura unos ~18 frames antes de ser eliminado.
+    """
+
+    LIFETIME = 0.3  # segundos (aprox. 18 frames a 60 FPS)
+
+    # Paletas: enemigo normal (rojo/naranja) vs marciano (verde/blanco)
+    PALETTES = {
+        False: [(255, 150, 50), (255, 230, 120), (255, 60, 60), (255, 190, 120)],
+        True: [(140, 255, 170), (240, 255, 255), (90, 220, 120), (255, 255, 255)],
+    }
+
+    def __init__(self, x, y, martian=False):
+        self.age = 0.0
+        n = 18 if martian else 14
+        palette = self.PALETTES[martian]
+        self.particles = []
+        for _ in range(n):
+            angle = random.uniform(0, math.tau)
+            speed = random.uniform(1.2, 4.5)
+            self.particles.append({
+                "x": float(x),
+                "y": float(y),
+                "vx": math.cos(angle) * speed,
+                "vy": math.sin(angle) * speed,
+                "r": random.uniform(1.5, 4.0),
+                "color": random.choice(palette),
+            })
+
+    @property
+    def alive(self):
+        return self.age < self.LIFETIME
+
+    def update(self, dt):
+        self.age += dt
+        for p in self.particles:
+            p["x"] += p["vx"]
+            p["y"] += p["vy"]
+            # Frenado con aire para que el estallido se "abra" y pare
+            p["vx"] *= 0.96
+            p["vy"] *= 0.96
+
+    def draw(self, surface):
+        # Alfa de fundido proporcional a la vida restante
+        t = 1.0 - self.age / self.LIFETIME
+        for p in self.particles:
+            r = max(1, int(p["r"] * (0.5 + 0.5 * t)))
+            alpha = int(255 * t)
+            x, y = int(p["x"]), int(p["y"])
+            s = pygame.Surface((r * 2 + 2, r * 2 + 2), pygame.SRCALPHA)
+            pygame.draw.circle(s, (*p["color"], alpha), (r + 1, r + 1), r)
+            surface.blit(s, (x - r - 1, y - r - 1))
 
 
 class Game:
@@ -297,6 +491,7 @@ class Game:
         self.player = Player(self)
         self.bullets = []
         self.enemies = []
+        self.explosions = []
         self.stars = self.make_stars(80)
         self.planets = self.make_planets(3)
         self.score = 0
@@ -333,18 +528,19 @@ class Game:
         self.elapsed += dt
         self.update_stars(dt)
 
-        # Dificultad creciente MUY gradual: ~+0.005 px/s de caida por segundo.
-        # A los 2 min la velocidad sube solo ~0.6 px/frame.
+        # Dificultad creciente POR OLEADA: +0.05 px/frame de caida por oleada.
+        # Tarda muchas oleadas en alcanzar el tope; la partida se mantiene
+        # jugable durante bastante tiempo.
         self.enemy_vel = min(
             ENEMY_MAX_VEL,
-            ENEMY_BASE_VEL + self.elapsed * 0.005
+            ENEMY_BASE_VEL + self.wave * 0.05
         )
 
         # Spawn de oleadas: el intervalo baja lentamente y con piso alto
         self.wave_timer -= dt
         if self.wave_timer <= 0:
             self.spawn_wave()
-            self.wave_timer = max(1.2, ENEMY_WAVE_DELAY - self.wave * 0.05)
+            self.wave_timer = max(1.6, ENEMY_WAVE_DELAY - self.wave * 0.04)
             self.wave += 1
 
         self.player.update(dt)
@@ -352,10 +548,13 @@ class Game:
             b.update(dt)
         for e in self.enemies:
             e.update(dt)
+        for ex in self.explosions:
+            ex.update(dt)
 
         # Limpieza de elementos fuera de pantalla
         self.bullets = [b for b in self.bullets if b.alive]
         self.enemies = [e for e in self.enemies if e.alive]
+        self.explosions = [ex for ex in self.explosions if ex.alive]
 
         self.check_collisions()
 
@@ -368,22 +567,29 @@ class Game:
                 s["x"] = random.randint(0, WIDTH)
 
     def spawn_wave(self):
-        # Progresion de cantidad: al inicio pocos enemigos, crecen lento.
-        # Filas:   oleadas 0-1 -> 2 | 2-3 -> 3 | 4-5 -> 4 | 6+ -> 5
-        # Columnas: oleadas 0-1 -> 5 | 2-3 -> 6 | 4+ -> 7
-        rows = min(ENEMY_ROWS, 2 + self.wave // 2)
-        cols = min(ENEMY_PER_ROW, 5 + self.wave // 2)
+        # Progresion muy lenta: pocos enemigos al inicio, crece poco a poco.
+        # Por oleada: 0-2 -> 1 | 3-5 -> 2 filas x 2 | 6+ -> max 2x3 (ENEMY_ROWS/ROW)
+        count = min(ENEMY_PER_ROW, 1 + self.wave // 3)
+        rows = min(ENEMY_ROWS, 1 + self.wave // 3)
         for row in range(rows):
-            for col in range(cols):
-                x = 10 + col * ((WIDTH - 20) / cols)
-                y = -ENEMY_SCALE[1] - row * (ENEMY_SCALE[1] + 14)
-                x += random.uniform(-4, 4)
-                # Un marciano aparece en lugar de un enemigo normal con
-                # probabilidad ~1 de cada 5-8 generados.
-                if random.random() < MARTIAN_CHANCE:
-                    e = Martian(x, y, self.enemy_vel + row * 0.2)
+            row_x = []
+            for _ in range(count):
+                # Disperso en el eje X: huecos amplios y sin superposiciones.
+                for _ in range(80):  # reintentos hasta separarlo bien
+                    x = random.randint(15, WIDTH - 15 - ENEMY_SCALE[0])
+                    if all(abs(x - px) >= 110 for px in row_x):
+                        break
                 else:
-                    e = Enemy(x, y, self.enemy_vel + row * 0.2)
+                    x = random.randrange(15, WIDTH - 15 - ENEMY_SCALE[0], 110)
+                row_x.append(x)
+                y = -ENEMY_SCALE[1] - row * (ENEMY_SCALE[1] + 70)
+                # Un marciano aparece en lugar de un meteorito con
+                # probabilidad ~1 de cada 5-8 generados.
+                vel = self.enemy_vel + row * 0.05
+                if random.random() < MARTIAN_CHANCE:
+                    e = Martian(x, y, vel)
+                else:
+                    e = Enemy(x, y, vel)
                 self.enemies.append(e)
 
     def check_collisions(self):
@@ -400,6 +606,9 @@ class Game:
                     if e.hp <= 0:
                         e.alive = False
                         self.score += e.points
+                        self.explosions.append(
+                            Explosion(e.x + e.width / 2, e.y + e.height / 2,
+                                      isinstance(e, Martian)))
                         self.play_sound("explosion")
                     else:
                         self.play_sound("hit")
@@ -411,6 +620,9 @@ class Game:
         for e in self.enemies:
             if e.alive and pr.colliderect(e.rect):
                 e.alive = False
+                self.explosions.append(
+                    Explosion(e.x + e.width / 2, e.y + e.height / 2,
+                              isinstance(e, Martian)))
                 print(f"COLISION -> Player rect: {pr} | Enemy rect: {e.rect} | Vidas antes: {self.player.lives}")
                 self.play_sound("explosion")
                 # Game Over solo tras una colision real (vidas <= 0)
@@ -456,6 +668,8 @@ class Game:
             b.draw(self.screen)
         for e in self.enemies:
             e.draw(self.screen)
+        for ex in self.explosions:
+            ex.draw(self.screen)
         self.draw_hud()
 
         if self.game_over:
@@ -549,3 +763,5 @@ class Game:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     Game()
+    
+    
