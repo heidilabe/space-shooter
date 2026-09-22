@@ -28,8 +28,16 @@ TITLE = "Space Shooter"
 PLAYER_VEL = 7
 PLAYER_COOLDOWN = 0.16          # segundos entre disparos (mas rapido)
 
-PLAYER_LIVES = 3
+PLAYER_LIVES = 5                 # vidas iniciales del jugador
+MAX_LIVES = 10                   # tope de vidas (los iconos del panel caben)
+LIFE_BONUS = 2                   # vidas que regala el alien punzante al tocarlo
 PLAYER_SCALE = (60, 60)
+
+# Energia: cada disparo consume y se regenera con el tiempo. Si llega a 0,
+# la nave deja de disparar hasta recargar un poco.
+PLAYER_ENERGY_MAX = 100          # energia maxima
+ENERGY_PER_SHOT = 6              # energia consumida por cada disparo
+ENERGY_REGEN = 45                # energia regenerada por segundo
 BULLET_SPEED = 14
 BULLET_SCALE = (6, 16)
 
@@ -45,6 +53,10 @@ ENEMY_POINTS = 10
 MARTIAN_HP = 3                    # disparos necesarios para destruirlo
 MARTIAN_POINTS = 75               # puntos al destruirlo
 MARTIAN_CHANCE = 0.16             # ~1 de cada 5-8 enemigos generados
+
+# Alien punzante: tocarlo REGALA vidas (no las quita)
+SPIKY_CHANCE = 0.12               # probabilidad de reaparecer en cada spawn
+SPIKY_POINTS = 5                  # puntos si lo destruyes a disparos
 
 # Colores
 BLACK = (5, 5, 12)
@@ -80,6 +92,7 @@ class Player:
         self.y = HEIGHT - self.height - 60
         self.speed = PLAYER_VEL
         self.lives = PLAYER_LIVES
+        self.energy = PLAYER_ENERGY_MAX
         self.cooldown_timer = 0.0
         self.invulnerable = 0.0  # segundos de invulnerabilidad tras perder vida
 
@@ -105,10 +118,13 @@ class Player:
         self.y = max(HEIGHT * 0.4, min(self.y, HEIGHT - self.height))
 
     def update(self, dt):
-        """Temporizadores (no mueve la nave): invulnerabilidad y disparo
-        automatico hacia adelante con cooldown fijo."""
+        """Temporizadores (no mueve la nave): invulnerabilidad, energia y
+        disparo automatico hacia adelante con cooldown fijo."""
         if self.invulnerable > 0:
             self.invulnerable -= dt
+
+        # La energia se regenera solo (se consume al disparar)
+        self.energy = min(PLAYER_ENERGY_MAX, self.energy + ENERGY_REGEN * dt)
 
         self.cooldown_timer -= dt
         if self.cooldown_timer <= 0:
@@ -116,6 +132,9 @@ class Player:
             self.cooldown_timer = PLAYER_COOLDOWN
 
     def shoot(self):
+        if self.energy < ENERGY_PER_SHOT:
+            return  # sin energia suficiente; se recarga con el tiempo
+        self.energy -= ENERGY_PER_SHOT
         bx = self.x + self.width / 2 - BULLET_SCALE[0] / 2
         self.game.bullets.append(Bullet(bx, self.y - 6))
 
@@ -414,6 +433,145 @@ class Martian:
         return pygame.Rect(self.x, self.y, self.width, self.height)
 
 
+class SpikyAlien:
+    """Alien punzante magenta: a diferencia del resto, TOCARLO regala vidas.
+
+    Se dibuja como un circulo con pinchos que giran. No aguanta impactos;
+    si le disparas se destruye (pocos puntos), pero la mejor jugada es
+    chocar con el de proposito para sumar LIFE_BONUS vidas (hasta MAX_LIVES).
+    """
+
+    def __init__(self, x, y, vel):
+        self.width, self.height = ENEMY_SCALE
+        self.x = x
+        self.y = y
+        self.vel = vel
+        self.hp = 1
+        self.points = SPIKY_POINTS
+        self.alive = True
+        self.wobble = random.uniform(0, math.tau)
+        self.spikes = random.randint(6, 9)
+
+    def update(self, dt):
+        self.wobble += dt * 4
+        self.y += self.vel
+        # Balanceo leve para que se note vivo mientras cae
+        self.x += math.sin(self.wobble) * 1.2
+        if self.y > HEIGHT:
+            self.alive = False
+
+    def draw(self, surface):
+        cx = int(self.x + self.width / 2)
+        cy = int(self.y + self.height / 2)
+        R = min(self.width, self.height) / 2 - 2
+
+        # Cuerpo central magenta neon
+        pygame.draw.circle(surface, (90, 20, 110), (cx, cy), R)
+        pygame.draw.circle(surface, (255, 90, 200), (cx, cy), R + 2, 2)
+
+        # Pinchos triangulares que giran con el wobble
+        for i in range(self.spikes):
+            a = self.wobble + i * math.tau / self.spikes
+            tip = (int(cx + math.cos(a) * (R + 8)), int(cy + math.sin(a) * (R + 8)))
+            base_in = (int(cx + math.cos(a - 0.22) * (R - 2)),
+                       int(cy + math.sin(a - 0.22) * (R - 2)))
+            base_out = (int(cx + math.cos(a + 0.22) * (R - 2)),
+                        int(cy + math.sin(a + 0.22) * (R - 2)))
+            pygame.draw.polygon(surface, (255, 160, 220), [base_in, tip, base_out])
+            pygame.draw.polygon(surface, (255, 90, 200), [base_in, tip, base_out], 1)
+
+        # Pupila brillante en el centro
+        pygame.draw.circle(surface, (255, 240, 255), (cx, cy), 4)
+        pygame.draw.circle(surface, (60, 10, 70), (cx, cy), 4, 1)
+
+    @property
+    def rect(self):
+        return pygame.Rect(self.x, self.y, self.width, self.height)
+
+
+class GamePanel:
+    """HUD centralizado: puntuacion, oleada, barra de energia e iconos.
+
+    Sustituye al antiguo draw_hud. Cada frame se refresca con update() y
+    pintar los iconos de vida depende de cuantas vidas queden.
+    """
+
+    ICON_W = 26          # ancho de cada icono de vida
+    ICON_H = 16          # alto de cada icono de vida
+
+    def __init__(self, game):
+        self.game = game
+        self.lives = 0
+        self.score = 0
+
+    def update(self, current_lives, current_score):
+        """Guarda los valores que se refrescan en cada frame."""
+        self.lives = current_lives
+        self.score = current_score
+
+    def draw(self, surface):
+        self.draw_texts(surface)
+        self.draw_health_bar(surface)
+        self.draw_life_icons(surface, self.lives)
+
+    def draw_texts(self, surface):
+        f_small = self.game.font_small
+        score = f_small.render(f"Score: {self.score}", True, WHITE)
+        surface.blit(score, (12, 10))
+        wave = f_small.render(f"Oleada: {self.game.wave}", True, NEON_PURPLE)
+        surface.blit(wave, (WIDTH - 120, 10))
+
+    def draw_health_bar(self, surface):
+        """Barra verde proporcional a las vidas del jugador:
+        ancho = (vidas / vidas_maximas) * ancho_maximo.
+
+        Al perder vidas la barra baja, y cerca de morir (2 vidas o menos)
+        queda casi vacia con un borde parpadeante que avisa del peligro.
+        """
+        w, h = 260, 10
+        x, y = 12, 70
+        pct = self.lives / MAX_LIVES if MAX_LIVES > 0 else 0.0
+        fill_w = int(w * pct)
+
+        # Marco oscuro y relleno verde (siempre verde, el hueco dice lo demas)
+        pygame.draw.rect(surface, (40, 40, 60), (x, y, w, h))
+        pygame.draw.rect(surface, (40, 200, 90), (x, y, fill_w, h))
+
+        # Cerca de la muerte: borde rojo/blanco parpadeante bien visible
+        if self.lives <= 2:
+            blink = int(self.game.elapsed * 6) % 2 == 0
+            border = RED if blink else WHITE
+            pygame.draw.rect(surface, border, (x, y, w, h), 3 if blink else 1)
+        else:
+            pygame.draw.rect(surface, WHITE, (x, y, w, h), 1)
+
+        label = self.game.font_small.render("Vidas", True, (160, 200, 255))
+        surface.blit(label, (x + w + 8, y - 2))
+
+    def draw_life_icons(self, surface, lives):
+        """Dibuja el sprite de la nave 'lives' veces en el panel."""
+        n = min(lives, MAX_LIVES)
+        for i in range(n):
+            x = 12 + i * (self.ICON_W + 4)
+            if x + self.ICON_W > WIDTH:  # no salirse del borde
+                break
+            self._draw_ship_icon(surface, x, 34)
+
+    def _draw_ship_icon(self, surface, x, y):
+        """Miniatura simplificada de la nave para el contador de vidas."""
+        cx = x + self.ICON_W / 2
+        body = [(cx, y), (cx + 5, y + 10), (cx + 5, y + self.ICON_H),
+                (cx - 5, y + self.ICON_H), (cx - 5, y + 10)]
+        pygame.draw.polygon(surface, DARK_PURPLE, body)
+        pygame.draw.polygon(surface, WHITE, body, 1)
+        for side in (-1, 1):
+            wing = [(cx + side * 3, y + 2),
+                    (cx + side * (self.ICON_W / 2 - 2), y + self.ICON_H),
+                    (cx + side * 2, y + self.ICON_H)]
+            pygame.draw.polygon(surface, WHITE, wing, 1)
+        pygame.draw.circle(surface, (140, 220, 255), (int(cx), int(y + 6)), 2)
+
+
 class Explosion:
     """Estallido de particulas que se expanden y desvanecen.
 
@@ -494,6 +652,7 @@ class Game:
         self.explosions = []
         self.stars = self.make_stars(80)
         self.planets = self.make_planets(3)
+        self.panel = GamePanel(self)
         self.score = 0
         self.wave = 0
         self.elapsed = 0.0
@@ -586,7 +745,9 @@ class Game:
                 # Un marciano aparece en lugar de un meteorito con
                 # probabilidad ~1 de cada 5-8 generados.
                 vel = self.enemy_vel + row * 0.05
-                if random.random() < MARTIAN_CHANCE:
+                if random.random() < SPIKY_CHANCE:
+                    e = SpikyAlien(x, y, vel)
+                elif random.random() < MARTIAN_CHANCE:
                     e = Martian(x, y, vel)
                 else:
                     e = Enemy(x, y, vel)
@@ -614,17 +775,25 @@ class Game:
                         self.play_sound("hit")
                     break
 
-        # Nave vs enemigos: UNICA condicion de perder vida. Los enemigos
-        # que llegan al fondo (ya eliminados en su update) no penalizan.
+        # Nave vs enemigos: tocar un alien punzante REGALA vidas; el resto
+        # solo pierde vida al chocar. Los enemigos que llegan al fondo (ya
+        # eliminados en su update) no penalizan.
         pr = self.player.rect
         for e in self.enemies:
-            if e.alive and pr.colliderect(e.rect):
-                e.alive = False
-                self.explosions.append(
-                    Explosion(e.x + e.width / 2, e.y + e.height / 2,
-                              isinstance(e, Martian)))
+            if not e.alive or not pr.colliderect(e.rect):
+                continue
+            e.alive = False  # hay que destruir el objeto al impactar
+            self.explosions.append(
+                Explosion(e.x + e.width / 2, e.y + e.height / 2,
+                          isinstance(e, Martian)))
+            self.play_sound("explosion")
+
+            if isinstance(e, SpikyAlien):
+                # Incremento de vidas limitado para no desbordar el panel
+                self.player.lives = min(self.player.lives + LIFE_BONUS, MAX_LIVES)
+                print(f"BONUS -> +{LIFE_BONUS} vidas | Vidas ahora: {self.player.lives}")
+            else:
                 print(f"COLISION -> Player rect: {pr} | Enemy rect: {e.rect} | Vidas antes: {self.player.lives}")
-                self.play_sound("explosion")
                 # Game Over solo tras una colision real (vidas <= 0)
                 if not self.player.hit():
                     self.game_over = True
@@ -706,12 +875,9 @@ class Game:
             )
 
     def draw_hud(self):
-        score_txt = self.font_small.render(f"Score: {self.score}", True, WHITE)
-        self.screen.blit(score_txt, (12, 12))
-        lives_txt = self.font_small.render(f"Vidas: {self.player.lives}", True, RED)
-        self.screen.blit(lives_txt, (12, 40))
-        wave_txt = self.font_small.render(f"Oleada: {self.wave}", True, NEON_PURPLE)
-        self.screen.blit(wave_txt, (WIDTH - 120, 12))
+        # El panel centraliza textos, barra de energia e iconos de vidas
+        self.panel.update(self.player.lives, self.score)
+        self.panel.draw(self.screen)
 
     def draw_game_over(self):
         overlay = pygame.Surface((WIDTH, HEIGHT))
